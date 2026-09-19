@@ -12,7 +12,7 @@ console.log('Starting server on port', PORT);
 app.use('/', createProxyMiddleware({
   target: TARGET,
   changeOrigin: true,
-  selfHandleResponse: true, // 自分でレスポンスを処理する
+  selfHandleResponse: true,
 
   onProxyReq: (proxyReq) => {
     proxyReq.setHeader('Host', TARGET_HOST);
@@ -21,10 +21,8 @@ app.use('/', createProxyMiddleware({
   },
 
   onProxyRes: (proxyRes, req, res) => {
-    // ステータスコードを設定
     res.statusCode = proxyRes.statusCode;
 
-    // ヘッダーをコピー（書き換え対象のヘッダーは除外）
     Object.keys(proxyRes.headers).forEach((key) => {
       const lower = key.toLowerCase();
       if (
@@ -83,6 +81,12 @@ app.use('/', createProxyMiddleware({
             .replaceAll(`http://${TARGET_HOST}`, currentOrigin)
             .replaceAll(`//${TARGET_HOST}`, `//${host}`)
             .replaceAll(TARGET_HOST, host);
+
+          // タブのタイトルを「google」に固定
+          text = text.replace(
+            /<title[^>]*>[\s\S]*?<\/title>/i,
+            `<title>google</title>`
+          );
 
           buffer = Buffer.from(text, 'utf8');
         } catch (err) {
