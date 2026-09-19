@@ -7,8 +7,36 @@ const PORT = process.env.PORT || 3000;
 const TARGET = 'https://momonga.mangandade.workers.dev';
 const TARGET_HOST = 'momonga.mangandade.workers.dev';
 
+// ========== パスワード設定 ==========
+const PASSWORD = '9247';
+// ==================================
+
 console.log('Starting server on port', PORT);
 
+// パスワード認証ミドルウェア
+app.use((req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader) {
+    res.setHeader('WWW-Authenticate', 'Basic realm="Password Required"');
+    return res.status(401).send('パスワードが必要です');
+  }
+
+  // Basic認証のデコード
+  const base64Credentials = authHeader.split(' ')[1];
+  const credentials = Buffer.from(base64Credentials, 'base64').toString('utf8');
+  const [username, password] = credentials.split(':');
+
+  // パスワードが正しければ通す（ユーザー名は何でもOK）
+  if (password === PASSWORD) {
+    return next();
+  }
+
+  res.setHeader('WWW-Authenticate', 'Basic realm="Password Required"');
+  return res.status(401).send('パスワードが違います');
+});
+
+// プロキシ処理
 app.use('/', createProxyMiddleware({
   target: TARGET,
   changeOrigin: true,
@@ -59,7 +87,6 @@ app.use('/', createProxyMiddleware({
         console.error('Decompress error:', err.message);
       }
 
-      // HTML / CSS / JS / JSON のみ書き換え
       const shouldRewrite =
         contentType.includes('text/html') ||
         contentType.includes('text/css') ||
@@ -86,6 +113,19 @@ app.use('/', createProxyMiddleware({
           text = text.replace(
             /<title[^>]*>[\s\S]*?<\/title>/i,
             `<title>google</title>`
+          );
+
+          // ファビコンをGoogleのものに変更
+          // 既存のfavicon関連タグを削除
+          text = text.replace(/<link[^>]*rel=["'](?:shortcut )?icon["'][^>]*>/gi, '');
+          text = text.replace(/<link[^>]*rel=["']apple-touch-icon["'][^>]*>/gi, '');
+
+          // Googleのファビコンを挿入
+          text = text.replace(
+            /<head[^>]*>/i,
+            `$&
+  <link rel="icon" href="https://www.google.com/favicon.ico" type="image/x-icon">
+  <link rel="shortcut icon" href="https://www.google.com/favicon.ico" type="image/x-icon">`
           );
 
           buffer = Buffer.from(text, 'utf8');
