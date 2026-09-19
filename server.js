@@ -7,44 +7,57 @@ const PORT = process.env.PORT || 3000;
 const TARGET = 'https://momonga.mangandade.workers.dev';
 const TARGET_HOST = 'momonga.mangandade.workers.dev';
 
-// プロキシ設定
-const proxy = createProxyMiddleware({
+console.log('Starting server...');
+console.log('PORT:', PORT);
+
+// プロキシ本体
+app.use('/', createProxyMiddleware({
   target: TARGET,
   changeOrigin: true,
-  selfHandleResponse: true, // 自分でレスポンスを処理する
+  selfHandleResponse: true,
   followRedirects: true,
 
-  onProxyReq: (proxyReq, req, res) => {
+  onProxyReq: (proxyReq) => {
     proxyReq.setHeader('Host', TARGET_HOST);
     proxyReq.removeHeader('referer');
     proxyReq.removeHeader('origin');
   },
 
-  onProxyRes: async (proxyRes, req, res) => {
-    const contentType = proxyRes.headers['content-type'] || '';
-    const isHtml = contentType.includes('text/html');
-    const isText = isHtml || 
-                   contentType.includes('text/css') || 
-                   contentType.includes('javascript') || 
-                   contentType.includes('application/json') ||
-                   contentType.includes('text/plain');
+  onProxyRes: (proxyRes, req, res) => {
+    const contentType = (proxyRes.headers['content-type'] || '').toLowerCase();
+    const isRewritable = 
+      contentType.includes('text/html') ||
+      contentType.includes('text/css') ||
+      contentType.includes('javascript') ||
+      contentType.includes('application/json') ||
+      contentType.includes('text/plain');
 
-    // ステータスコードとヘッダーをコピー
-    res.status(proxyRes.statusCode);
+    // ステータスコードを設定
+    res.statusCode = proxyRes.statusCode;
 
-    // 不要なヘッダーを削除
-    const headers = { ...proxyRes.headers };
-    delete headers['content-security-policy'];
-    delete headers['x-frame-options'];
-    delete headers['content-length']; // 書き換え後に変わるため
+    // ヘッダーをコピー（不要なものを除外）
+    Object.keys(proxyRes.headers).forEach(key => {
+      const lowerKey = key.toLowerCase();
+      if (
+        lowerKey !== 'content-length' &&
+        lowerKey !== 'content-encoding' &&
+        lowerKey !== 'content-security-policy' &&
+        lowerKey !== 'x-frame-options'
+      ) {
+        res.setHeader(key, proxyRes.headers[key]);
+      }
+    });
 
-    // 圧縮されている場合は解凍してから処理
-    let body = [];
-    proxyRes.on('data', chunk => body.push(chunk));
+    let chunks = [];
+
+    proxyRes.on('data', (chunk) => {
+      chunks.push(chunk);
+    });
+
     proxyRes.on('end', () => {
-      let buffer = Buffer.concat(body);
+      let buffer = Buffer.concat(chunks);
 
-      // gzip / brotli / deflate 対応
+      // 圧縮解除
       const encoding = proxyRes.headers['content-encoding'];
       try {
         if (encoding === 'gzip') {
@@ -54,56 +67,57 @@ const proxy = createProxyMiddleware({
         } else if (encoding === 'deflate') {
           buffer = zlib.inflateSync(buffer);
         }
-      } catch (e) {
-        console.error('Decompress error:', e.message);
+      } catch (err) {
+        console.error('Decompress error:', err.message);
       }
 
-      // テキスト系ならURLを書き換える
-      if (isText) {
-        let text = buffer.toString('utf8');
+      // URL書き換え
+      if (isRewritable) {
+        try {
+          let text = buffer.toString('utf8');
 
-        // 現在のホスト（Renderのドメイン）を取得
-        const currentHost = req.headers.host; // 例: momonga-mirror.onrender.com
-        const protocol = req.headers['x-forwarded-proto'] || 'https';
-        const currentOrigin = `${protocol}://${currentHost}`;
+          const host = req.headers.host;
+          const protocol = req.headers['x-forwarded-proto'] || 'https';
+          const currentOrigin = `${protocol}://${host}`;
 
-        // 絶対URLを現在のドメインに置き換え
-        text = text
-          .replaceAll(`https://${TARGET_HOST}`, currentOrigin)
-          .replaceAll(`http://${TARGET_HOST}`, currentOrigin)
-          .replaceAll(`//${TARGET_HOST}`, `//${currentHost}`)
-          .replaceAll(TARGET_HOST, currentHost); // 念のため
+          text = text
+            .replaceAll(`https://${TARGET_HOST}`, currentOrigin)
+            .replaceAll(`http://${TARGET_HOST}`, currentOrigin)
+            .replaceAll(`//${TARGET_HOST}`, `//${host}`)
+            .replaceAll(TARGET_HOST, host);
 
-        buffer = Buffer.from(text, 'utf8');
-
-        // 圧縮を解除したので content-encoding を消す
-        delete headers['content-encoding'];
+          buffer = Buffer.from(text, 'utf8');
+        } catch (err) {
+          console.error('Rewrite error:', err.message);
+        }
       }
 
-      // ヘッダーをセットして返す
-      Object.keys(headers).forEach(key => {
-        res.setHeader(key, headers[key]);
-      });
-      res.setHeader('content-length', buffer.length);
+      res.setHeader('Content-Length', buffer.length);
       res.end(buffer);
+    });
+
+    proxyRes.on('error', (err) => {
+      console.error('ProxyRes error:', err.message);
+      if (!res.headersSent) {
+        res.status(502).end('Bad Gateway');
+      }
     });
   },
 
   onError: (err, req, res) => {
-    console.error(`[Proxy Error] ${req.method} ${req.url}:`, err.message);
+    console.error('Proxy error:', err.message);
     if (!res.headersSent) {
       res.status(502).send('Bad Gateway');
     }
-  },
-});
-
-app.use('/', proxy);
+  }
+}));
 
 // ヘルスチェック
 app.get('/health', (req, res) => {
   res.status(200).send('OK');
 });
 
-app.listen(PORT, () => {
-  console.log(`Momonga Full Mirror running on port ${PORT}`);
+// 重要：0.0.0.0 でリッスンする
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server is running on port ${PORT}`);
 });
